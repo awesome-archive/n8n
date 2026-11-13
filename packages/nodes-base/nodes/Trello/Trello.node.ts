@@ -1,51 +1,104 @@
-import {
+import type {
 	IExecuteFunctions,
-} from 'n8n-core';
-import {
+	ILoadOptionsFunctions,
 	IDataObject,
-	INodeTypeDescription,
 	INodeExecutionData,
+	INodeListSearchResult,
 	INodeType,
+	INodeTypeDescription,
+	IHttpRequestMethods,
+	RequestPath,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
-import {
-	apiRequest,
-} from './GenericFunctions';
+import { attachmentFields, attachmentOperations } from './AttachmentDescription';
+import { boardFields, boardOperations } from './BoardDescription';
+import { boardMemberFields, boardMemberOperations } from './BoardMemberDescription';
+import { cardCommentFields, cardCommentOperations } from './CardCommentDescription';
+import { cardFields, cardOperations } from './CardDescription';
+import { checklistFields, checklistOperations } from './ChecklistDescription';
+import { apiRequest, apiRequestAllItems } from './GenericFunctions';
+import { labelFields, labelOperations } from './LabelDescription';
+import { listFields, listOperations } from './ListDescription';
+
+interface TrelloBoardType {
+	id: string;
+	name: string;
+	url: string;
+	desc: string;
+}
 
 export class Trello implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Trello',
 		name: 'trello',
-		icon: 'file:trello.png',
+		icon: 'file:trello.svg',
 		group: ['transform'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
 		description: 'Create, change and delete boards and cards',
 		defaults: {
 			name: 'Trello',
-			color: '#026aa7',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		usableAsTool: true,
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'trelloApi',
 				required: true,
-			}
+				displayOptions: { show: { authentication: ['apiKey'] } },
+			},
+			{
+				name: 'trelloOAuth1Api',
+				required: true,
+				displayOptions: { show: { authentication: ['oAuth1'] } },
+			},
 		],
 		properties: [
+			{
+				displayName: 'Authentication',
+				name: 'authentication',
+				type: 'options',
+				options: [
+					{ name: 'API Key', value: 'apiKey' },
+					{ name: 'OAuth1', value: 'oAuth1' },
+				],
+				default: 'apiKey',
+			},
 			{
 				displayName: 'Resource',
 				name: 'resource',
 				type: 'options',
+				noDataExpression: true,
 				options: [
+					{
+						name: 'Attachment',
+						value: 'attachment',
+					},
 					{
 						name: 'Board',
 						value: 'board',
 					},
 					{
+						name: 'Board Member',
+						value: 'boardMember',
+					},
+					{
 						name: 'Card',
 						value: 'card',
+					},
+					{
+						name: 'Card Comment',
+						value: 'cardComment',
+					},
+					{
+						name: 'Checklist',
+						value: 'checklist',
+					},
+					{
+						name: 'Label',
+						value: 'label',
 					},
 					{
 						name: 'List',
@@ -53,1382 +106,827 @@ export class Trello implements INodeType {
 					},
 				],
 				default: 'card',
-				description: 'The resource to operate on.',
-			},
-
-
-
-			// ----------------------------------
-			//         board
-			// ----------------------------------
-			{
-				displayName: 'Operation',
-				name: 'operation',
-				type: 'options',
-				displayOptions: {
-					show: {
-						resource: [
-							'board',
-						],
-					},
-				},
-				options: [
-					{
-						name: 'Create',
-						value: 'create',
-						description: 'Create a new board',
-					},
-					{
-						name: 'Delete',
-						value: 'delete',
-						description: 'Delete a board',
-					},
-					{
-						name: 'Get',
-						value: 'get',
-						description: 'Get the data of a board',
-					},
-					{
-						name: 'Update',
-						value: 'update',
-						description: 'Update a board',
-					},
-				],
-				default: 'create',
-				description: 'The operation to perform.',
 			},
 
 			// ----------------------------------
-			//         board:create
+			//         operations
 			// ----------------------------------
-			{
-				displayName: 'Name',
-				name: 'name',
-				type: 'string',
-				default: '',
-				placeholder: 'My board',
-				required: true,
-				displayOptions: {
-					show: {
-						operation: [
-							'create',
-						],
-						resource: [
-							'board',
-						],
-					},
-				},
-				description: 'The name of the board',
-			},
-			{
-				displayName: 'Description',
-				name: 'description',
-				type: 'string',
-				default: '',
-				displayOptions: {
-					show: {
-						operation: [
-							'create',
-						],
-						resource: [
-							'board',
-						],
-					},
-				},
-				description: 'The description of the board',
-			},
-			{
-				displayName: 'Additional Fields',
-				name: 'additionalFields',
-				type: 'collection',
-				placeholder: 'Add Field',
-				displayOptions: {
-					show: {
-						operation: [
-							'create',
-						],
-						resource: [
-							'board',
-						],
-					},
-				},
-				default: {},
-				options: [
-					{
-						displayName: 'Aging',
-						name: 'prefs_cardAging',
-						type: 'options',
-						options: [
-							{
-								name: 'Pirate',
-								value: 'pirate',
-							},
-							{
-								name: 'Regular',
-								value: 'regular',
-							},
-						],
-						default: 'regular',
-						description: 'Determines the type of card aging that should take place on the board if card aging is enabled.',
-					},
-					{
-						displayName: 'Background',
-						name: 'prefs_background',
-						type: 'string',
-						default: 'blue',
-						description: 'The id of a custom background or one of: blue, orange, green, red, purple, pink, lime, sky, grey.',
-					},
-					{
-						displayName: 'Comments',
-						name: 'prefs_comments',
-						type: 'options',
-						options: [
-							{
-								name: 'Disabled',
-								value: 'disabled',
-							},
-							{
-								name: 'Members',
-								value: 'members',
-							},
-							{
-								name: 'Observers',
-								value: 'observers',
-							},
-							{
-								name: 'Organization',
-								value: 'org',
-							},
-							{
-								name: 'Public',
-								value: 'public',
-							},
-						],
-						default: 'members',
-						description: 'Who can comment on cards on this board.',
-					},
-					{
-						displayName: 'Covers',
-						name: 'prefs_cardCovers',
-						type: 'boolean',
-						default: true,
-						description: 'Determines whether card covers are enabled.',
-					},
-					{
-						displayName: 'Invitations',
-						name: 'prefs_invitations',
-						type: 'options',
-						options: [
-							{
-								name: 'Admins',
-								value: 'admins',
-							},
-							{
-								name: 'Members',
-								value: 'members',
-							},
-						],
-						default: 'members',
-						description: 'Determines what types of members can invite users to join.',
-					},
-					{
-						displayName: 'Keep From Source',
-						name: 'keepFromSource',
-						type: 'string',
-						default: 'none',
-						description: 'To keep cards from the original board pass in the value cards.',
-					},
-					{
-						displayName: 'Labels',
-						name: 'defaultLabels',
-						type: 'boolean',
-						default: true,
-						description: 'Determines whether to use the default set of labels.',
-					},
-					{
-						displayName: 'Lists',
-						name: 'defaultLists',
-						type: 'boolean',
-						default: true,
-						description: 'Determines whether to add the default set of lists to a board(To Do, Doing, Done).It is ignored if idBoardSource is provided.',
-					},
-					{
-						displayName: 'Organization ID',
-						name: 'idOrganization',
-						type: 'string',
-						default: '',
-						description: 'The id or name of the team the board should belong to.',
-					},
-					{
-						displayName: 'Permission Level',
-						name: 'prefs_permissionLevel',
-						type: 'options',
-						options: [
-							{
-								name: 'Organization',
-								value: 'org',
-							},
-							{
-								name: 'Private',
-								value: 'private',
-							},
-							{
-								name: 'Public',
-								value: 'public',
-							},
-						],
-						default: 'private',
-						description: 'The permissions level of the board.',
-					},
-					{
-						displayName: 'Power Ups',
-						name: 'powerUps',
-						type: 'options',
-						options: [
-							{
-								name: 'All',
-								value: 'all',
-							},
-							{
-								name: 'Calendar',
-								value: 'calendar',
-							},
-							{
-								name: 'Card Aging',
-								value: 'cardAging',
-							},
-							{
-								name: 'Recap',
-								value: 'recap',
-							},
-							{
-								name: 'Voting',
-								value: 'voting',
-							},
-						],
-						default: 'all',
-						description: 'The Power-Ups that should be enabled on the new board.',
-					},
-					{
-						displayName: 'Self Join',
-						name: 'prefs_selfJoin',
-						type: 'boolean',
-						default: true,
-						description: 'Determines whether users can join the boards themselves or whether they have to be invited.',
-					},
-					{
-						displayName: 'Source IDs',
-						name: 'idBoardSource',
-						type: 'string',
-						default: '',
-						description: 'The id of a board to copy into the new board.',
-					},
-					{
-						displayName: 'Voting',
-						name: 'prefs_voting',
-						type: 'options',
-						options: [
-							{
-								name: 'Disabled',
-								value: 'disabled',
-							},
-							{
-								name: 'Members',
-								value: 'members',
-							},
-							{
-								name: 'Observers',
-								value: 'observers',
-							},
-							{
-								name: 'Organization',
-								value: 'org',
-							},
-							{
-								name: 'Public',
-								value: 'public',
-							},
-						],
-						default: 'disabled',
-						description: 'Who can vote on this board.',
-					},
-				],
-			},
+			...attachmentOperations,
+			...boardOperations,
+			...boardMemberOperations,
+			...cardOperations,
+			...cardCommentOperations,
+			...checklistOperations,
+			...labelOperations,
+			...listOperations,
 
 			// ----------------------------------
-			//         board:delete
+			//         fields
 			// ----------------------------------
-			{
-				displayName: 'Board ID',
-				name: 'id',
-				type: 'string',
-				default: '',
-				required: true,
-				displayOptions: {
-					show: {
-						operation: [
-							'delete',
-						],
-						resource: [
-							'board',
-						],
-					},
-				},
-				description: 'The ID of the board to delete.',
-			},
-
-			// ----------------------------------
-			//         board:get
-			// ----------------------------------
-			{
-				displayName: 'Board ID',
-				name: 'id',
-				type: 'string',
-				default: '',
-				required: true,
-				displayOptions: {
-					show: {
-						operation: [
-							'get',
-						],
-						resource: [
-							'board',
-						],
-					},
-				},
-				description: 'The ID of the board to get.',
-			},
-			{
-				displayName: 'Additional Fields',
-				name: 'additionalFields',
-				type: 'collection',
-				placeholder: 'Add Field',
-				displayOptions: {
-					show: {
-						operation: [
-							'get',
-						],
-						resource: [
-							'board',
-						],
-					},
-				},
-				default: {},
-				options: [
-					{
-						displayName: 'Fields',
-						name: 'fields',
-						type: 'string',
-						default: 'all',
-						description: 'Fields to return. Either "all" or a comma-separated list:<br />closed, dateLastActivity, dateLastView, desc, descData,<br />idOrganization, invitations, invited, labelNames, memberships,<br />name, pinned, powerUps, prefs, shortLink, shortUrl,<br />starred, subscribed, url',
-					},
-					{
-						displayName: 'Plugin Data',
-						name: 'pluginData',
-						type: 'boolean',
-						default: false,
-						description: 'Whether to include pluginData on the card with the response.',
-					},
-				],
-			},
-
-			// ----------------------------------
-			//         board:update
-			// ----------------------------------
-			{
-				displayName: 'Board ID',
-				name: 'id',
-				type: 'string',
-				default: '',
-				required: true,
-				displayOptions: {
-					show: {
-						operation: [
-							'update',
-						],
-						resource: [
-							'board',
-						],
-					},
-				},
-				description: 'The ID of the board to update.',
-			},
-			{
-				displayName: 'Update Fields',
-				name: 'updateFields',
-				type: 'collection',
-				placeholder: 'Add Field',
-				displayOptions: {
-					show: {
-						operation: [
-							'update',
-						],
-						resource: [
-							'board',
-						],
-					},
-				},
-				default: {},
-				options: [
-					{
-						displayName: 'Closed',
-						name: 'closed',
-						type: 'boolean',
-						default: false,
-						description: 'Whether the board is closed.',
-					},
-					{
-						displayName: 'Description',
-						name: 'desc',
-						type: 'string',
-						default: '',
-						description: 'New description of the board',
-					},
-					{
-						displayName: 'Name',
-						name: 'name',
-						type: 'string',
-						default: '',
-						description: 'New name of the board',
-					},
-					{
-						displayName: 'Organization ID',
-						name: 'idOrganization',
-						type: 'string',
-						default: '',
-						description: 'The id of the team the board should be moved to.',
-					},
-					{
-						displayName: 'Subscribed',
-						name: 'subscribed',
-						type: 'boolean',
-						default: false,
-						description: 'Whether the acting user is subscribed to the board.',
-					},
-				],
-			},
-
-
-
-			// ----------------------------------
-			//         card
-			// ----------------------------------
-			{
-				displayName: 'Operation',
-				name: 'operation',
-				type: 'options',
-				displayOptions: {
-					show: {
-						resource: [
-							'card',
-						],
-					},
-				},
-				options: [
-					{
-						name: 'Create',
-						value: 'create',
-						description: 'Create a new card',
-					},
-					{
-						name: 'Delete',
-						value: 'delete',
-						description: 'Delete a card',
-					},
-					{
-						name: 'Get',
-						value: 'get',
-						description: 'Get the data of a card',
-					},
-					{
-						name: 'Update',
-						value: 'update',
-						description: 'Update a card',
-					},
-				],
-				default: 'create',
-				description: 'The operation to perform.',
-			},
-
-			// ----------------------------------
-			//         card:create
-			// ----------------------------------
-			{
-				displayName: 'List ID',
-				name: 'listId',
-				type: 'string',
-				default: '',
-				required: true,
-				displayOptions: {
-					show: {
-						operation: [
-							'create',
-						],
-						resource: [
-							'card',
-						],
-					},
-				},
-				description: 'The id of the list to create card in',
-			},
-			{
-				displayName: 'Name',
-				name: 'name',
-				type: 'string',
-				default: '',
-				placeholder: 'My card',
-				required: true,
-				displayOptions: {
-					show: {
-						operation: [
-							'create',
-						],
-						resource: [
-							'card',
-						],
-					},
-				},
-				description: 'The name of the card',
-			},
-			{
-				displayName: 'Description',
-				name: 'description',
-				type: 'string',
-				default: '',
-				displayOptions: {
-					show: {
-						operation: [
-							'create',
-						],
-						resource: [
-							'card',
-						],
-					},
-				},
-				description: 'The description of the card',
-			},
-			{
-				displayName: 'Additional Fields',
-				name: 'additionalFields',
-				type: 'collection',
-				placeholder: 'Add Field',
-				displayOptions: {
-					show: {
-						operation: [
-							'create',
-						],
-						resource: [
-							'card',
-						],
-					},
-				},
-				default: {},
-				options: [
-					{
-						displayName: 'Due Date',
-						name: 'due',
-						type: 'dateTime',
-						default: '',
-						description: 'A due date for the card.',
-					},
-					{
-						displayName: 'Due Complete',
-						name: 'dueComplete',
-						type: 'boolean',
-						default: false,
-						description: 'If the card is completed.',
-					},
-					{
-						displayName: 'Position',
-						name: 'pos',
-						type: 'string',
-						default: 'bottom',
-						description: 'The position of the new card. top, bottom, or a positive float.',
-					},
-					{
-						displayName: 'Member IDs',
-						name: 'idMembers',
-						type: 'string',
-						default: '',
-						description: 'Comma-separated list of member IDs to add to the card.',
-					},
-					{
-						displayName: 'Label IDs',
-						name: 'idLabels',
-						type: 'string',
-						default: '',
-						description: 'Comma-separated list of label IDs to add to the card.',
-					},
-					{
-						displayName: 'URL Source',
-						name: 'urlSource',
-						type: 'string',
-						default: '',
-						description: 'A source URL to attach to card.',
-					},
-					{
-						displayName: 'Source ID',
-						name: 'idCardSource',
-						type: 'string',
-						default: '',
-						description: 'The ID of a card to copy into the new card.',
-					},
-					{
-						displayName: 'Keep from source',
-						name: 'keepFromSource',
-						type: 'string',
-						default: 'all',
-						description: 'If using idCardSource you can specify which properties to copy over. all or comma-separated list of: attachments, checklists, comments, due, labels, members, stickers',
-					},
-				],
-			},
-
-			// ----------------------------------
-			//         card:delete
-			// ----------------------------------
-			{
-				displayName: 'Card ID',
-				name: 'id',
-				type: 'string',
-				default: '',
-				required: true,
-				displayOptions: {
-					show: {
-						operation: [
-							'delete',
-						],
-						resource: [
-							'card',
-						],
-					},
-				},
-				description: 'The ID of the card to delete.',
-			},
-
-			// ----------------------------------
-			//         card:get
-			// ----------------------------------
-			{
-				displayName: 'Card ID',
-				name: 'id',
-				type: 'string',
-				default: '',
-				required: true,
-				displayOptions: {
-					show: {
-						operation: [
-							'get',
-						],
-						resource: [
-							'card',
-						],
-					},
-				},
-				description: 'The ID of the card to get.',
-			},
-			{
-				displayName: 'Additional Fields',
-				name: 'additionalFields',
-				type: 'collection',
-				placeholder: 'Add Field',
-				displayOptions: {
-					show: {
-						operation: [
-							'get',
-						],
-						resource: [
-							'card',
-						],
-					},
-				},
-				default: {},
-				options: [
-					{
-						displayName: 'Fields',
-						name: 'fields',
-						type: 'string',
-						default: 'all',
-						description: 'Fields to return. Either "all" or a comma-separated list:<br />badges, checkItemStates, closed, dateLastActivity, desc,<br />descData, due, email, idBoard, idChecklists, idLabels, idList,<br />idMembers, idShort, idAttachmentCover, manualCoverAttachment<br />, labels, name, pos, shortUrl, url',
-					},
-					{
-						displayName: 'Board',
-						name: 'board',
-						type: 'boolean',
-						default: false,
-						description: 'Whether to return the board object the card is on.',
-					},
-					{
-						displayName: 'Board Fields',
-						name: 'board_fields',
-						type: 'string',
-						default: 'all',
-						description: 'Fields to return. Either "all" or a comma-separated list:<br />name, desc, descData, closed, idOrganization, pinned, url, prefs',
-					},
-					{
-						displayName: 'Custom Field Items',
-						name: 'customFieldItems',
-						type: 'boolean',
-						default: false,
-						description: 'Whether to include the customFieldItems.',
-					},
-					{
-						displayName: 'Members',
-						name: 'members',
-						type: 'boolean',
-						default: false,
-						description: 'Whether to return member objects for members on the card.',
-					},
-					{
-						displayName: 'Member Fields',
-						name: 'member_fields',
-						type: 'string',
-						default: 'all',
-						description: 'Fields to return. Either "all" or a comma-separated list:<br />avatarHash, fullName, initials, username',
-					},
-					{
-						displayName: 'Plugin Data',
-						name: 'pluginData',
-						type: 'boolean',
-						default: false,
-						description: 'Whether to include pluginData on the card with the response.',
-					},
-					{
-						displayName: 'Stickers',
-						name: 'stickers',
-						type: 'boolean',
-						default: false,
-						description: 'Whether to include sticker models with the response.',
-					},
-					{
-						displayName: 'Sticker Fields',
-						name: 'sticker_fields',
-						type: 'string',
-						default: 'all',
-						description: 'Fields to return. Either "all" or a comma-separated list of sticker fields.',
-					},
-				],
-			},
-
-			// ----------------------------------
-			//         card:update
-			// ----------------------------------
-			{
-				displayName: 'Card ID',
-				name: 'id',
-				type: 'string',
-				default: '',
-				required: true,
-				displayOptions: {
-					show: {
-						operation: [
-							'update',
-						],
-						resource: [
-							'card',
-						],
-					},
-				},
-				description: 'The ID of the card to update.',
-			},
-			{
-				displayName: 'Update Fields',
-				name: 'updateFields',
-				type: 'collection',
-				placeholder: 'Add Field',
-				displayOptions: {
-					show: {
-						operation: [
-							'update',
-						],
-						resource: [
-							'card',
-						],
-					},
-				},
-				default: {},
-				options: [
-					{
-						displayName: 'Attachment Cover',
-						name: 'idAttachmentCover',
-						type: 'string',
-						default: '',
-						description: 'The ID of the image attachment the card should use as its cover, or null for none.',
-					},
-					{
-						displayName: 'Board ID',
-						name: 'idBoard',
-						type: 'string',
-						default: '',
-						description: 'The ID of the board the card should be on.',
-					},
-					{
-						displayName: 'Closed',
-						name: 'closed',
-						type: 'boolean',
-						default: false,
-						description: 'Whether the board is closed.',
-					},
-					{
-						displayName: 'Description',
-						name: 'desc',
-						type: 'string',
-						default: '',
-						description: 'New description of the board.',
-					},
-					{
-						displayName: 'Due Date',
-						name: 'due',
-						type: 'dateTime',
-						default: '',
-						description: 'A due date for the card.',
-					},
-					{
-						displayName: 'Due Complete',
-						name: 'dueComplete',
-						type: 'boolean',
-						default: false,
-						description: 'If the card is completed.',
-					},
-					{
-						displayName: 'Label IDs',
-						name: 'idLabels',
-						type: 'string',
-						default: '',
-						description: 'Comma-separated list of label IDs to set on card.',
-					},
-					{
-						displayName: 'List ID',
-						name: 'idList',
-						type: 'string',
-						default: '',
-						description: 'The ID of the list the card should be in.',
-					},
-					{
-						displayName: 'Member IDs',
-						name: 'idMembers',
-						type: 'string',
-						default: '',
-						description: 'Comma-separated list of member IDs to set on card.',
-					},
-					{
-						displayName: 'Name',
-						name: 'name',
-						type: 'string',
-						default: '',
-						description: 'New name of the board',
-					},
-					{
-						displayName: 'Position',
-						name: 'pos',
-						type: 'string',
-						default: 'bottom',
-						description: 'The position of the card. top, bottom, or a positive float.',
-					},
-					{
-						displayName: 'Subscribed',
-						name: 'subscribed',
-						type: 'boolean',
-						default: false,
-						description: 'Whether the acting user is subscribed to the board.',
-					},
-				],
-			},
-
-
-
-			// ----------------------------------
-			//         list
-			// ----------------------------------
-			{
-				displayName: 'Operation',
-				name: 'operation',
-				type: 'options',
-				displayOptions: {
-					show: {
-						resource: [
-							'list',
-						],
-					},
-				},
-				options: [
-					{
-						name: 'Archive',
-						value: 'archive',
-						description: 'Archive/Unarchive a list',
-					},
-					{
-						name: 'Create',
-						value: 'create',
-						description: 'Create a new list',
-					},
-					{
-						name: 'Get',
-						value: 'get',
-						description: 'Get the data of a list',
-					},
-					{
-						name: 'Update',
-						value: 'update',
-						description: 'Update a list',
-					},
-				],
-				default: 'create',
-				description: 'The operation to perform.',
-			},
-
-			// ----------------------------------
-			//         list:archive
-			// ----------------------------------
-			{
-				displayName: 'List ID',
-				name: 'id',
-				type: 'string',
-				default: '',
-				required: true,
-				displayOptions: {
-					show: {
-						operation: [
-							'archive',
-						],
-						resource: [
-							'list',
-						],
-					},
-				},
-				description: 'The ID of the list to archive or unarchive.',
-			},
-			{
-				displayName: 'Archive',
-				name: 'archive',
-				type: 'boolean',
-				default: false,
-				displayOptions: {
-					show: {
-						operation: [
-							'archive',
-						],
-						resource: [
-							'list',
-						],
-					},
-				},
-				description: 'If the list should be archived or unarchived.',
-			},
-
-			// ----------------------------------
-			//         list:create
-			// ----------------------------------
-			{
-				displayName: 'Board ID',
-				name: 'idBoard',
-				type: 'string',
-				default: '',
-				required: true,
-				displayOptions: {
-					show: {
-						operation: [
-							'create',
-						],
-						resource: [
-							'list',
-						],
-					},
-				},
-				description: 'The ID of the board the list should be created in',
-			},
-			{
-				displayName: 'Name',
-				name: 'name',
-				type: 'string',
-				default: '',
-				placeholder: 'My list',
-				required: true,
-				displayOptions: {
-					show: {
-						operation: [
-							'create',
-						],
-						resource: [
-							'list',
-						],
-					},
-				},
-				description: 'The name of the list',
-			},
-			{
-				displayName: 'Additional Fields',
-				name: 'additionalFields',
-				type: 'collection',
-				placeholder: 'Add Field',
-				displayOptions: {
-					show: {
-						operation: [
-							'create',
-						],
-						resource: [
-							'list',
-						],
-					},
-				},
-				default: {},
-				options: [
-					{
-						displayName: 'List Source',
-						name: 'idListSource',
-						type: 'string',
-						default: '',
-						description: 'ID of the list to copy into the new list.',
-					},
-					{
-						displayName: 'Position',
-						name: 'pos',
-						type: 'string',
-						default: 'bottom',
-						description: 'The position of the new list. top, bottom, or a positive float.',
-					},
-				],
-			},
-
-			// ----------------------------------
-			//         list:get
-			// ----------------------------------
-			{
-				displayName: 'List ID',
-				name: 'id',
-				type: 'string',
-				default: '',
-				required: true,
-				displayOptions: {
-					show: {
-						operation: [
-							'get',
-						],
-						resource: [
-							'list',
-						],
-					},
-				},
-				description: 'The ID of the list to get.',
-			},
-			{
-				displayName: 'Additional Fields',
-				name: 'additionalFields',
-				type: 'collection',
-				placeholder: 'Add Field',
-				displayOptions: {
-					show: {
-						operation: [
-							'get',
-						],
-						resource: [
-							'list',
-						],
-					},
-				},
-				default: {},
-				options: [
-					{
-						displayName: 'Fields',
-						name: 'fields',
-						type: 'string',
-						default: 'all',
-						description: 'Fields to return. Either "all" or a comma-separated list of fields.',
-					},
-				],
-			},
-
-			// ----------------------------------
-			//         list:update
-			// ----------------------------------
-			{
-				displayName: 'List ID',
-				name: 'id',
-				type: 'string',
-				default: '',
-				required: true,
-				displayOptions: {
-					show: {
-						operation: [
-							'update',
-						],
-						resource: [
-							'list',
-						],
-					},
-				},
-				description: 'The ID of the list to update.',
-			},
-			{
-				displayName: 'Update Fields',
-				name: 'updateFields',
-				type: 'collection',
-				placeholder: 'Add Field',
-				displayOptions: {
-					show: {
-						operation: [
-							'update',
-						],
-						resource: [
-							'list',
-						],
-					},
-				},
-				default: {},
-				options: [
-					{
-						displayName: 'Board ID',
-						name: 'idBoard',
-						type: 'string',
-						default: '',
-						description: 'ID of a board the list should be moved to.',
-					},
-					{
-						displayName: 'Closed',
-						name: 'closed',
-						type: 'boolean',
-						default: false,
-						description: 'Whether the list is closed.',
-					},
-					{
-						displayName: 'Name',
-						name: 'name',
-						type: 'string',
-						default: '',
-						description: 'New name of the list',
-					},
-					{
-						displayName: 'Position',
-						name: 'pos',
-						type: 'string',
-						default: 'bottom',
-						description: 'The position of the list. top, bottom, or a positive float.',
-					},
-					{
-						displayName: 'Subscribed',
-						name: 'subscribed',
-						type: 'boolean',
-						default: false,
-						description: 'Whether the acting user is subscribed to the list.',
-					},
-				],
-			},
-
+			...attachmentFields,
+			...boardFields,
+			...boardMemberFields,
+			...cardFields,
+			...cardCommentFields,
+			...checklistFields,
+			...labelFields,
+			...listFields,
 		],
 	};
 
+	methods = {
+		listSearch: {
+			async searchBoards(
+				this: ILoadOptionsFunctions,
+				query?: string,
+			): Promise<INodeListSearchResult> {
+				if (!query) {
+					throw new NodeOperationError(this.getNode(), 'Query required for Trello search');
+				}
+				const searchResults = await apiRequest.call(
+					this,
+					'GET',
+					requestPath`search`,
+					{},
+					{
+						query,
+						modelTypes: 'boards',
+						board_fields: 'name,url,desc',
+						// Enables partial word searching, only for the start of words though
+						partial: true,
+						// Seems like a good number since it isn't paginated. Default is 10.
+						boards_limit: 50,
+					},
+				);
+				return {
+					results: searchResults.boards.map((b: TrelloBoardType) => ({
+						name: b.name,
+						value: b.id,
+						url: b.url,
+						description: b.desc,
+					})),
+				};
+			},
+			async searchCards(
+				this: ILoadOptionsFunctions,
+				query?: string,
+			): Promise<INodeListSearchResult> {
+				if (!query) {
+					throw new NodeOperationError(this.getNode(), 'Query required for Trello search');
+				}
+				const searchResults = await apiRequest.call(
+					this,
+					'GET',
+					requestPath`search`,
+					{},
+					{
+						query,
+						modelTypes: 'cards',
+						board_fields: 'name,url,desc',
+						// Enables partial word searching, only for the start of words though
+						partial: true,
+						// Seems like a good number since it isn't paginated. Default is 10.
+						cards_limit: 50,
+					},
+				);
+				return {
+					results: searchResults.cards.map((b: TrelloBoardType) => ({
+						name: b.name,
+						value: b.id,
+						url: b.url,
+						description: b.desc,
+					})),
+				};
+			},
+		},
+	};
 
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
-		const returnData: IDataObject[] = [];
+		const returnData: INodeExecutionData[] = [];
 
-		const operation = this.getNodeParameter('operation', 0) as string;
-		const resource = this.getNodeParameter('resource', 0) as string;
+		const operation = this.getNodeParameter('operation', 0);
+		const resource = this.getNodeParameter('resource', 0);
 
 		// For Post
 		let body: IDataObject;
 		// For Query string
 		let qs: IDataObject;
 
-		let requestMethod: string;
-		let endpoint: string;
+		let requestMethod: IHttpRequestMethods;
+		let endpoint: RequestPath;
+		let returnAll = false;
+		let responseData;
 
 		for (let i = 0; i < items.length; i++) {
-			requestMethod = 'GET';
-			endpoint = '';
-			body = {};
-			qs = {};
+			try {
+				requestMethod = 'GET';
+				body = {};
+				qs = {};
 
-			if (resource === 'board') {
+				if (resource === 'board') {
+					if (operation === 'create') {
+						// ----------------------------------
+						//         create
+						// ----------------------------------
 
-				if (operation === 'create') {
-					// ----------------------------------
-					//         create
-					// ----------------------------------
+						requestMethod = 'POST';
+						endpoint = requestPath`boards`;
 
-					requestMethod = 'POST';
-					endpoint = 'boards';
+						body.name = this.getNodeParameter('name', i) as string;
+						body.desc = this.getNodeParameter('description', i) as string;
 
-					qs.name = this.getNodeParameter('name', i) as string;
-					qs.desc = this.getNodeParameter('description', i) as string;
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(body, additionalFields);
+					} else if (operation === 'delete') {
+						// ----------------------------------
+						//         delete
+						// ----------------------------------
 
-					const additionalFields = this.getNodeParameter('additionalFields', i) as IDataObject;
-					Object.assign(qs, additionalFields);
+						requestMethod = 'DELETE';
 
-				} else if (operation === 'delete') {
-					// ----------------------------------
-					//         delete
-					// ----------------------------------
+						const id = this.getNodeParameter('id', i, undefined, {
+							extractValue: true,
+						}) as string;
 
-					requestMethod = 'DELETE';
+						endpoint = requestPath`boards/${id}`;
+					} else if (operation === 'get') {
+						// ----------------------------------
+						//         get
+						// ----------------------------------
 
-					const id = this.getNodeParameter('id', i) as string;
+						requestMethod = 'GET';
 
-					endpoint = `boards/${id}`;
+						const id = this.getNodeParameter('id', i, undefined, { extractValue: true });
 
-				} else if (operation === 'get') {
-					// ----------------------------------
-					//         get
-					// ----------------------------------
+						endpoint = requestPath`boards/${id}`;
 
-					requestMethod = 'GET';
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(qs, additionalFields);
+					} else if (operation === 'update') {
+						// ----------------------------------
+						//         update
+						// ----------------------------------
 
-					const id = this.getNodeParameter('id', i) as string;
+						requestMethod = 'PUT';
 
-					endpoint = `boards/${id}`;
+						const id = this.getNodeParameter('id', i, undefined, { extractValue: true });
 
-					const additionalFields = this.getNodeParameter('additionalFields', i) as IDataObject;
-					Object.assign(qs, additionalFields);
+						endpoint = requestPath`boards/${id}`;
 
-				} else if (operation === 'update') {
-					// ----------------------------------
-					//         update
-					// ----------------------------------
+						const updateFields = this.getNodeParameter('updateFields', i);
+						Object.assign(qs, updateFields);
+					} else {
+						throw new NodeOperationError(
+							this.getNode(),
+							`The operation "${operation}" is not known!`,
+							{ itemIndex: i },
+						);
+					}
+				} else if (resource === 'boardMember') {
+					if (operation === 'getAll') {
+						// ----------------------------------
+						//         getAll
+						// ----------------------------------
 
-					requestMethod = 'PUT';
+						requestMethod = 'GET';
 
-					const id = this.getNodeParameter('id', i) as string;
+						const id = this.getNodeParameter('id', i) as string;
+						returnAll = this.getNodeParameter('returnAll', i);
+						if (!returnAll) {
+							qs.limit = this.getNodeParameter('limit', i);
+						}
 
-					endpoint = `boards/${id}`;
+						endpoint = requestPath`boards/${id}/members`;
+					} else if (operation === 'add') {
+						// ----------------------------------
+						//               add
+						// ----------------------------------
 
-					const updateFields = this.getNodeParameter('updateFields', i) as IDataObject;
-					Object.assign(qs, updateFields);
+						requestMethod = 'PUT';
 
+						const id = this.getNodeParameter('id', i) as string;
+						const idMember = this.getNodeParameter('idMember', i) as string;
+
+						endpoint = requestPath`boards/${id}/members/${idMember}`;
+
+						qs.type = this.getNodeParameter('type', i) as string;
+						qs.allowBillableGuest = this.getNodeParameter(
+							'additionalFields.allowBillableGuest',
+							i,
+							false,
+						) as boolean;
+					} else if (operation === 'invite') {
+						// ----------------------------------
+						//              invite
+						// ----------------------------------
+
+						requestMethod = 'PUT';
+
+						const id = this.getNodeParameter('id', i) as string;
+
+						endpoint = requestPath`boards/${id}/members`;
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+
+						qs.email = this.getNodeParameter('email', i) as string;
+						qs.type = additionalFields.type as string;
+						body.fullName = additionalFields.fullName as string;
+					} else if (operation === 'remove') {
+						// ----------------------------------
+						//              remove
+						// ----------------------------------
+
+						requestMethod = 'DELETE';
+
+						const id = this.getNodeParameter('id', i) as string;
+						const idMember = this.getNodeParameter('idMember', i) as string;
+
+						endpoint = requestPath`boards/${id}/members/${idMember}`;
+					} else {
+						throw new NodeOperationError(
+							this.getNode(),
+							`The operation "${operation}" is not known!`,
+							{ itemIndex: i },
+						);
+					}
+				} else if (resource === 'card') {
+					if (operation === 'create') {
+						// ----------------------------------
+						//         create
+						// ----------------------------------
+
+						requestMethod = 'POST';
+						endpoint = requestPath`cards`;
+
+						body.idList = this.getNodeParameter('listId', i) as string;
+
+						body.name = this.getNodeParameter('name', i) as string;
+						body.desc = this.getNodeParameter('description', i) as string;
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(body, additionalFields);
+					} else if (operation === 'delete') {
+						// ----------------------------------
+						//         delete
+						// ----------------------------------
+
+						requestMethod = 'DELETE';
+
+						const id = this.getNodeParameter('id', i, undefined, { extractValue: true });
+
+						endpoint = requestPath`cards/${id}`;
+					} else if (operation === 'get') {
+						// ----------------------------------
+						//         get
+						// ----------------------------------
+
+						requestMethod = 'GET';
+
+						const id = this.getNodeParameter('id', i, undefined, { extractValue: true });
+
+						endpoint = requestPath`cards/${id}`;
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(qs, additionalFields);
+					} else if (operation === 'update') {
+						// ----------------------------------
+						//         update
+						// ----------------------------------
+
+						requestMethod = 'PUT';
+
+						const id = this.getNodeParameter('id', i, undefined, { extractValue: true });
+
+						endpoint = requestPath`cards/${id}`;
+
+						const updateFields = this.getNodeParameter('updateFields', i);
+						Object.assign(qs, updateFields);
+					} else {
+						throw new NodeOperationError(
+							this.getNode(),
+							`The operation "${operation}" is not known!`,
+							{ itemIndex: i },
+						);
+					}
+				} else if (resource === 'cardComment') {
+					if (operation === 'create') {
+						// ----------------------------------
+						//         create
+						// ----------------------------------
+
+						const cardId = this.getNodeParameter('cardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						body.text = this.getNodeParameter('text', i) as string;
+
+						requestMethod = 'POST';
+
+						endpoint = requestPath`cards/${cardId}/actions/comments`;
+					} else if (operation === 'delete') {
+						// ----------------------------------
+						//         delete
+						// ----------------------------------
+
+						requestMethod = 'DELETE';
+
+						const cardId = this.getNodeParameter('cardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						const commentId = this.getNodeParameter('commentId', i) as string;
+
+						endpoint = requestPath`/cards/${cardId}/actions/${commentId}/comments`;
+					} else if (operation === 'update') {
+						// ----------------------------------
+						//         update
+						// ----------------------------------
+
+						requestMethod = 'PUT';
+
+						const cardId = this.getNodeParameter('cardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						const commentId = this.getNodeParameter('commentId', i) as string;
+
+						qs.text = this.getNodeParameter('text', i) as string;
+
+						endpoint = requestPath`cards/${cardId}/actions/${commentId}/comments`;
+					} else {
+						throw new NodeOperationError(
+							this.getNode(),
+							`The operation "${operation}" is not known!`,
+							{ itemIndex: i },
+						);
+					}
+				} else if (resource === 'list') {
+					if (operation === 'archive') {
+						// ----------------------------------
+						//         archive
+						// ----------------------------------
+
+						requestMethod = 'PUT';
+
+						const id = this.getNodeParameter('id', i) as string;
+						qs.value = this.getNodeParameter('archive', i) as boolean;
+
+						endpoint = requestPath`lists/${id}/closed`;
+					} else if (operation === 'create') {
+						// ----------------------------------
+						//         create
+						// ----------------------------------
+
+						requestMethod = 'POST';
+						endpoint = requestPath`lists`;
+
+						body.idBoard = this.getNodeParameter('idBoard', i) as string;
+
+						body.name = this.getNodeParameter('name', i) as string;
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(body, additionalFields);
+					} else if (operation === 'get') {
+						// ----------------------------------
+						//         get
+						// ----------------------------------
+
+						requestMethod = 'GET';
+
+						const id = this.getNodeParameter('id', i) as string;
+
+						endpoint = requestPath`lists/${id}`;
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(qs, additionalFields);
+					} else if (operation === 'getAll') {
+						// ----------------------------------
+						//         getAll
+						// ----------------------------------
+
+						requestMethod = 'GET';
+
+						returnAll = this.getNodeParameter('returnAll', i);
+
+						if (!returnAll) {
+							qs.limit = this.getNodeParameter('limit', i);
+						}
+
+						const id = this.getNodeParameter('id', i) as string;
+
+						endpoint = requestPath`boards/${id}/lists`;
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(qs, additionalFields);
+					} else if (operation === 'getCards') {
+						// ----------------------------------
+						//         getCards
+						// ----------------------------------
+
+						requestMethod = 'GET';
+
+						returnAll = this.getNodeParameter('returnAll', i);
+
+						if (!returnAll) {
+							qs.limit = this.getNodeParameter('limit', i);
+						}
+
+						const id = this.getNodeParameter('id', i) as string;
+
+						endpoint = requestPath`lists/${id}/cards`;
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(qs, additionalFields);
+					} else if (operation === 'update') {
+						// ----------------------------------
+						//         update
+						// ----------------------------------
+
+						requestMethod = 'PUT';
+
+						const id = this.getNodeParameter('id', i) as string;
+
+						endpoint = requestPath`lists/${id}`;
+
+						const updateFields = this.getNodeParameter('updateFields', i);
+						Object.assign(qs, updateFields);
+					} else {
+						throw new NodeOperationError(
+							this.getNode(),
+							`The operation "${operation}" is not known!`,
+							{ itemIndex: i },
+						);
+					}
+				} else if (resource === 'attachment') {
+					if (operation === 'create') {
+						// ----------------------------------
+						//         create
+						// ----------------------------------
+
+						requestMethod = 'POST';
+
+						const cardId = this.getNodeParameter('cardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						const url = this.getNodeParameter('url', i) as string;
+
+						Object.assign(body, {
+							url,
+						});
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(body, additionalFields);
+
+						endpoint = requestPath`cards/${cardId}/attachments`;
+					} else if (operation === 'delete') {
+						// ----------------------------------
+						//         delete
+						// ----------------------------------
+
+						requestMethod = 'DELETE';
+
+						const cardId = this.getNodeParameter('cardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						const id = this.getNodeParameter('id', i) as string;
+
+						endpoint = requestPath`cards/${cardId}/attachments/${id}`;
+					} else if (operation === 'get') {
+						// ----------------------------------
+						//         get
+						// ----------------------------------
+
+						requestMethod = 'GET';
+
+						const cardId = this.getNodeParameter('cardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						const id = this.getNodeParameter('id', i) as string;
+
+						endpoint = requestPath`cards/${cardId}/attachments/${id}`;
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(qs, additionalFields);
+					} else if (operation === 'getAll') {
+						// ----------------------------------
+						//         getAll
+						// ----------------------------------
+
+						requestMethod = 'GET';
+
+						const cardId = this.getNodeParameter('cardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						endpoint = requestPath`cards/${cardId}/attachments`;
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(qs, additionalFields);
+					} else {
+						throw new NodeOperationError(
+							this.getNode(),
+							`The operation "${operation}" is not known!`,
+							{ itemIndex: i },
+						);
+					}
+				} else if (resource === 'checklist') {
+					if (operation === 'create') {
+						// ----------------------------------
+						//         create
+						// ----------------------------------
+
+						requestMethod = 'POST';
+
+						const cardId = this.getNodeParameter('cardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						const name = this.getNodeParameter('name', i) as string;
+
+						Object.assign(body, { name });
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(body, additionalFields);
+
+						endpoint = requestPath`cards/${cardId}/checklists`;
+					} else if (operation === 'delete') {
+						// ----------------------------------
+						//         delete
+						// ----------------------------------
+
+						requestMethod = 'DELETE';
+
+						const cardId = this.getNodeParameter('cardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						const id = this.getNodeParameter('id', i) as string;
+
+						endpoint = requestPath`cards/${cardId}/checklists/${id}`;
+					} else if (operation === 'get') {
+						// ----------------------------------
+						//         get
+						// ----------------------------------
+
+						requestMethod = 'GET';
+
+						const id = this.getNodeParameter('id', i) as string;
+
+						endpoint = requestPath`checklists/${id}`;
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(qs, additionalFields);
+					} else if (operation === 'getAll') {
+						// ----------------------------------
+						//         getAll
+						// ----------------------------------
+
+						requestMethod = 'GET';
+
+						const cardId = this.getNodeParameter('cardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						endpoint = requestPath`cards/${cardId}/checklists`;
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(qs, additionalFields);
+					} else if (operation === 'getCheckItem') {
+						// ----------------------------------
+						//         getCheckItem
+						// ----------------------------------
+
+						requestMethod = 'GET';
+
+						const cardId = this.getNodeParameter('cardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						const checkItemId = this.getNodeParameter('checkItemId', i) as string;
+
+						endpoint = requestPath`cards/${cardId}/checkItem/${checkItemId}`;
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(qs, additionalFields);
+					} else if (operation === 'createCheckItem') {
+						// ----------------------------------
+						//         createCheckItem
+						// ----------------------------------
+
+						requestMethod = 'POST';
+
+						const checklistId = this.getNodeParameter('checklistId', i) as string;
+
+						endpoint = requestPath`checklists/${checklistId}/checkItems`;
+
+						const name = this.getNodeParameter('name', i) as string;
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(body, { name, ...additionalFields });
+					} else if (operation === 'deleteCheckItem') {
+						// ----------------------------------
+						//         deleteCheckItem
+						// ----------------------------------
+
+						requestMethod = 'DELETE';
+
+						const cardId = this.getNodeParameter('cardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						const checkItemId = this.getNodeParameter('checkItemId', i) as string;
+
+						endpoint = requestPath`cards/${cardId}/checkItem/${checkItemId}`;
+					} else if (operation === 'updateCheckItem') {
+						// ----------------------------------
+						//         updateCheckItem
+						// ----------------------------------
+
+						requestMethod = 'PUT';
+
+						const cardId = this.getNodeParameter('cardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						const checkItemId = this.getNodeParameter('checkItemId', i) as string;
+
+						endpoint = requestPath`cards/${cardId}/checkItem/${checkItemId}`;
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(qs, additionalFields);
+					} else if (operation === 'completedCheckItems') {
+						// ----------------------------------
+						//         completedCheckItems
+						// ----------------------------------
+
+						requestMethod = 'GET';
+
+						const cardId = this.getNodeParameter('cardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						endpoint = requestPath`cards/${cardId}/checkItemStates`;
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(qs, additionalFields);
+					} else {
+						throw new NodeOperationError(
+							this.getNode(),
+							`The operation "${operation}" is not known!`,
+							{ itemIndex: i },
+						);
+					}
+				} else if (resource === 'label') {
+					if (operation === 'create') {
+						// ----------------------------------
+						//         create
+						// ----------------------------------
+
+						requestMethod = 'POST';
+
+						const idBoard = this.getNodeParameter('boardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						const name = this.getNodeParameter('name', i) as string;
+						const color = this.getNodeParameter('color', i) as string;
+
+						Object.assign(body, {
+							idBoard,
+							name,
+							color,
+						});
+
+						endpoint = requestPath`labels`;
+					} else if (operation === 'delete') {
+						// ----------------------------------
+						//         delete
+						// ----------------------------------
+
+						requestMethod = 'DELETE';
+
+						const id = this.getNodeParameter('id', i) as string;
+
+						endpoint = requestPath`labels/${id}`;
+					} else if (operation === 'get') {
+						// ----------------------------------
+						//         get
+						// ----------------------------------
+
+						requestMethod = 'GET';
+
+						const id = this.getNodeParameter('id', i) as string;
+
+						endpoint = requestPath`labels/${id}`;
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+						Object.assign(qs, additionalFields);
+					} else if (operation === 'getAll') {
+						// ----------------------------------
+						//         getAll
+						// ----------------------------------
+
+						requestMethod = 'GET';
+
+						const idBoard = this.getNodeParameter('boardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						endpoint = requestPath`board/${idBoard}/labels`;
+
+						const additionalFields = this.getNodeParameter('additionalFields', i);
+
+						Object.assign(qs, additionalFields);
+					} else if (operation === 'update') {
+						// ----------------------------------
+						//         update
+						// ----------------------------------
+
+						requestMethod = 'PUT';
+
+						const id = this.getNodeParameter('id', i) as string;
+
+						endpoint = requestPath`labels/${id}`;
+
+						const updateFields = this.getNodeParameter('updateFields', i);
+						Object.assign(qs, updateFields);
+					} else if (operation === 'addLabel') {
+						// ----------------------------------
+						//         addLabel
+						// ----------------------------------
+
+						requestMethod = 'POST';
+
+						const cardId = this.getNodeParameter('cardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						const id = this.getNodeParameter('id', i) as string;
+
+						body.value = id;
+
+						endpoint = requestPath`/cards/${cardId}/idLabels`;
+					} else if (operation === 'removeLabel') {
+						// ----------------------------------
+						//         removeLabel
+						// ----------------------------------
+
+						requestMethod = 'DELETE';
+
+						const cardId = this.getNodeParameter('cardId', i, undefined, {
+							extractValue: true,
+						}) as string;
+
+						const id = this.getNodeParameter('id', i) as string;
+
+						endpoint = requestPath`/cards/${cardId}/idLabels/${id}`;
+					} else {
+						throw new NodeOperationError(
+							this.getNode(),
+							`The operation "${operation}" is not known!`,
+							{ itemIndex: i },
+						);
+					}
 				} else {
-					throw new Error(`The operation "${operation}" is not known!`);
+					throw new NodeOperationError(this.getNode(), `The resource "${resource}" is not known!`, {
+						itemIndex: i,
+					});
 				}
 
-			} else if (resource === 'card') {
+				// resources listed here do not support pagination so
+				// paginate them 'manually'
+				const skipPagination = ['list:getAll'];
 
-				if (operation === 'create') {
-					// ----------------------------------
-					//         create
-					// ----------------------------------
-
-					requestMethod = 'POST';
-					endpoint = 'cards';
-
-					qs.idList = this.getNodeParameter('listId', i) as string;
-
-					qs.name = this.getNodeParameter('name', i) as string;
-					qs.desc = this.getNodeParameter('description', i) as string;
-
-					const additionalFields = this.getNodeParameter('additionalFields', i) as IDataObject;
-					Object.assign(qs, additionalFields);
-
-				} else if (operation === 'delete') {
-					// ----------------------------------
-					//         delete
-					// ----------------------------------
-
-					requestMethod = 'DELETE';
-
-					const id = this.getNodeParameter('id', i) as string;
-
-					endpoint = `cards/${id}`;
-
-				} else if (operation === 'get') {
-					// ----------------------------------
-					//         get
-					// ----------------------------------
-
-					requestMethod = 'GET';
-
-					const id = this.getNodeParameter('id', i) as string;
-
-					endpoint = `cards/${id}`;
-
-					const additionalFields = this.getNodeParameter('additionalFields', i) as IDataObject;
-					Object.assign(qs, additionalFields);
-
-				} else if (operation === 'update') {
-					// ----------------------------------
-					//         update
-					// ----------------------------------
-
-					requestMethod = 'PUT';
-
-					const id = this.getNodeParameter('id', i) as string;
-
-					endpoint = `cards/${id}`;
-
-					const updateFields = this.getNodeParameter('updateFields', i) as IDataObject;
-					Object.assign(qs, updateFields);
-
+				if (returnAll && !skipPagination.includes(`${resource}:${operation}`)) {
+					responseData = await apiRequestAllItems.call(this, requestMethod, endpoint, body, qs);
 				} else {
-					throw new Error(`The operation "${operation}" is not known!`);
+					responseData = await apiRequest.call(this, requestMethod, endpoint, body, qs);
+					if (!returnAll && qs.limit) {
+						responseData = responseData.splice(0, qs.limit);
+					}
 				}
 
-
-			} else if (resource === 'list') {
-
-				if (operation === 'archive') {
-					// ----------------------------------
-					//         archive
-					// ----------------------------------
-
-					requestMethod = 'PUT';
-
-					const id = this.getNodeParameter('id', i) as string;
-					qs.value = this.getNodeParameter('archive', i) as boolean;
-
-					endpoint = `lists/${id}/closed`;
-
-				} else if (operation === 'create') {
-					// ----------------------------------
-					//         create
-					// ----------------------------------
-
-					requestMethod = 'POST';
-					endpoint = 'lists';
-
-					qs.idBoard = this.getNodeParameter('idBoard', i) as string;
-
-					qs.name = this.getNodeParameter('name', i) as string;
-
-					const additionalFields = this.getNodeParameter('additionalFields', i) as IDataObject;
-					Object.assign(qs, additionalFields);
-
-				} else if (operation === 'get') {
-					// ----------------------------------
-					//         get
-					// ----------------------------------
-
-					requestMethod = 'GET';
-
-					const id = this.getNodeParameter('id', i) as string;
-
-					endpoint = `lists/${id}`;
-
-					const additionalFields = this.getNodeParameter('additionalFields', i) as IDataObject;
-					Object.assign(qs, additionalFields);
-
-				} else if (operation === 'update') {
-					// ----------------------------------
-					//         update
-					// ----------------------------------
-
-					requestMethod = 'PUT';
-
-					const id = this.getNodeParameter('id', i) as string;
-
-					endpoint = `lists/${id}`;
-
-					const updateFields = this.getNodeParameter('updateFields', i) as IDataObject;
-					Object.assign(qs, updateFields);
-
-				} else {
-					throw new Error(`The operation "${operation}" is not known!`);
+				const executionData = this.helpers.constructExecutionMetaData(
+					this.helpers.returnJsonArray(responseData as IDataObject[]),
+					{ itemData: { item: i } },
+				);
+				returnData.push(...executionData);
+			} catch (error) {
+				if (this.continueOnFail()) {
+					const executionData = this.helpers.constructExecutionMetaData(
+						this.helpers.returnJsonArray({ error: error.message }),
+						{ itemData: { item: i } },
+					);
+					returnData.push(...executionData);
+					continue;
 				}
-
-			} else {
-				throw new Error(`The resource "${resource}" is not known!`);
+				throw error;
 			}
-
-			const responseData = await apiRequest.call(this, requestMethod, endpoint, body, qs);
-
-			returnData.push(responseData as IDataObject);
 		}
 
-		return [this.helpers.returnJsonArray(returnData)];
+		return [returnData];
 	}
 }

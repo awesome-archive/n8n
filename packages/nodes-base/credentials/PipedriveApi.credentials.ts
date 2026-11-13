@@ -1,18 +1,40 @@
-import {
+import type {
+	IAuthenticateGeneric,
+	ICredentialTestRequest,
 	ICredentialType,
-	NodePropertyTypes,
+	INodeProperties,
 } from 'n8n-workflow';
-
 
 export class PipedriveApi implements ICredentialType {
 	name = 'pipedriveApi';
+
 	displayName = 'Pipedrive API';
-	properties = [
+
+	documentationUrl = 'pipedrive';
+
+	properties: INodeProperties[] = [
 		{
 			displayName: 'API Token',
 			name: 'apiToken',
-			type: 'string' as NodePropertyTypes,
+			type: 'string',
+			typeOptions: { password: true },
 			default: '',
 		},
 	];
+
+	authenticate: IAuthenticateGeneric = {
+		type: 'generic',
+		properties: {
+			qs: {
+				api_token: '={{$credentials.apiToken}}',
+			},
+		},
+	};
+
+	test: ICredentialTestRequest = {
+		request: {
+			baseURL: 'https://api.pipedrive.com/v1',
+			url: '/userSettings',
+		},
+	};
 }

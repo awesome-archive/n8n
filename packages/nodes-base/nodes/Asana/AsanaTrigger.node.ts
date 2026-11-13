@@ -1,40 +1,50 @@
-import {
+import type {
 	IHookFunctions,
 	IWebhookFunctions,
-} from 'n8n-core';
-
-import {
 	IDataObject,
-	INodeTypeDescription,
+	ILoadOptionsFunctions,
+	INodePropertyOptions,
 	INodeType,
-	IWebhookResonseData,
+	INodeTypeDescription,
+	IWebhookResponseData,
 } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
-import {
-	asanaApiRequest,
-} from './GenericFunctions';
-
-import { createHmac } from 'crypto';
+import { verifySignature } from './AsanaTriggerHelpers';
+import { asanaApiRequest, getWorkspaces } from './GenericFunctions';
 
 export class AsanaTrigger implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Asana Trigger',
 		name: 'asanaTrigger',
-		icon: 'file:asana.png',
+		icon: 'file:asana.svg',
 		group: ['trigger'],
 		version: 1,
-		description: 'Starts the workflow when Asana events occure.',
+		description: 'Starts the workflow when Asana events occur.',
 		defaults: {
 			name: 'Asana Trigger',
-			color: '#559922',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'asanaApi',
 				required: true,
-			}
+				displayOptions: {
+					show: {
+						authentication: ['accessToken'],
+					},
+				},
+			},
+			{
+				name: 'asanaOAuth2Api',
+				required: true,
+				displayOptions: {
+					show: {
+						authentication: ['oAuth2'],
+					},
+				},
+			},
 		],
 		webhooks: [
 			{
@@ -46,6 +56,22 @@ export class AsanaTrigger implements INodeType {
 		],
 		properties: [
 			{
+				displayName: 'Authentication',
+				name: 'authentication',
+				type: 'options',
+				options: [
+					{
+						name: 'Access Token',
+						value: 'accessToken',
+					},
+					{
+						name: 'OAuth2',
+						value: 'oAuth2',
+					},
+				],
+				default: 'accessToken',
+			},
+			{
 				displayName: 'Resource',
 				name: 'resource',
 				type: 'string',
@@ -53,62 +79,98 @@ export class AsanaTrigger implements INodeType {
 				required: true,
 				description: 'The resource ID to subscribe to. The resource can be a task or project.',
 			},
+			{
+				displayName: 'Workspace Name or ID',
+				name: 'workspace',
+				type: 'options',
+				typeOptions: {
+					loadOptionsMethod: 'getWorkspaces',
+				},
+				options: [],
+				default: '',
+				description:
+					'The workspace ID the resource is registered under. This is only required if you want to allow overriding existing webhooks. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
+			},
 		],
-
 	};
 
-	// @ts-ignore (because of request)
+	methods = {
+		loadOptions: {
+			// Get all the available workspaces to display them to user so that they can
+			// select them easily
+			async getWorkspaces(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				const workspaces = await getWorkspaces.call(this);
+				workspaces.unshift({
+					name: '',
+					value: '',
+				});
+				return workspaces;
+			},
+		},
+	};
+
 	webhookMethods = {
 		default: {
 			async checkExists(this: IHookFunctions): Promise<boolean> {
 				const webhookData = this.getWorkflowStaticData('node');
 
-				if (webhookData.webhookId === undefined) {
-					// No webhook id is set so no webhook can exist
-					return false;
-				}
-
-				// Webhook got created before so check if it still exists
-				const endpoint = `webhooks/${webhookData.webhookId}`;
-
-				try {
-					await asanaApiRequest.call(this, 'GET', endpoint, {});
-				} catch (e) {
-					if (e.statusCode === 404) {
-						// Webhook does not exist
-						delete webhookData.webhookId;
-
-						return false;
-					}
-
-					// Some error occured
-					throw e;
-				}
-
-				// If it did not error then the webhook exists
-				return true;
-			},
-			async create(this: IHookFunctions): Promise<boolean> {
-				const webhookUrl = this.getNodeWebhookUrl('default');
+				const webhookUrl = this.getNodeWebhookUrl('default') as string;
 
 				const resource = this.getNodeParameter('resource') as string;
 
-				const endpoint = `webhooks`;
+				const workspace = this.getNodeParameter('workspace') as string;
+
+				const { data } = await asanaApiRequest.call(
+					this,
+					'GET',
+					requestPath`/webhooks`,
+					{},
+					{ workspace },
+				);
+
+				for (const webhook of data) {
+					if (webhook.resource.gid === resource && webhook.target === webhookUrl) {
+						webhookData.webhookId = webhook.gid;
+						return true;
+					}
+				}
+
+				// If it did not error then the webhook exists
+				return false;
+			},
+			async create(this: IHookFunctions): Promise<boolean> {
+				const webhookData = this.getWorkflowStaticData('node');
+
+				const webhookUrl = this.getNodeWebhookUrl('default') as string;
+
+				if (webhookUrl.includes('%20')) {
+					throw new NodeOperationError(
+						this.getNode(),
+						'The name of the Asana Trigger Node is not allowed to contain any spaces!',
+					);
+				}
+
+				const resource = this.getNodeParameter('resource') as string;
 
 				const body = {
 					resource,
 					target: webhookUrl,
 				};
 
-				const responseData = await asanaApiRequest.call(this, 'POST', endpoint, body);
+				const responseData = await asanaApiRequest.call(this, 'POST', requestPath`/webhooks`, body);
 
-				if (responseData.data === undefined || responseData.data.id === undefined) {
+				if (responseData.data === undefined || responseData.data.gid === undefined) {
 					// Required data is missing so was not successful
 					return false;
 				}
 
-				const webhookData = this.getWorkflowStaticData('node');
-				webhookData.webhookId = responseData.data.id as string;
+				webhookData.webhookId = responseData.data.gid as string;
+
+				// Asana also returns the webhook's verification secret in this response
+				const hookSecret = responseData['X-Hook-Secret'];
+				if (typeof hookSecret === 'string' && hookSecret.length > 0) {
+					webhookData.hookSecret = hookSecret;
+				}
 
 				return true;
 			},
@@ -116,19 +178,24 @@ export class AsanaTrigger implements INodeType {
 				const webhookData = this.getWorkflowStaticData('node');
 
 				if (webhookData.webhookId !== undefined) {
-					const endpoint = `webhooks/${webhookData.webhookId}`;
 					const body = {};
 
 					try {
-						await asanaApiRequest.call(this, 'DELETE', endpoint, body);
-					} catch (e) {
+						await asanaApiRequest.call(
+							this,
+							'DELETE',
+							requestPath`/webhooks/${webhookData.webhookId}`,
+							body,
+						);
+					} catch (error) {
 						return false;
 					}
 
 					// Remove from the static workflow data so that it is clear
-					// that no webhooks are registred anymore
+					// that no webhooks are registered anymore
 					delete webhookData.webhookId;
 					delete webhookData.webhookEvents;
+					delete webhookData.hookSecret;
 				}
 
 				return true;
@@ -136,49 +203,43 @@ export class AsanaTrigger implements INodeType {
 		},
 	};
 
-
-
-	async webhook(this: IWebhookFunctions): Promise<IWebhookResonseData> {
-		const bodyData = this.getBodyData() as IDataObject;
+	async webhook(this: IWebhookFunctions): Promise<IWebhookResponseData> {
+		const bodyData = this.getBodyData();
 		const headerData = this.getHeaderData() as IDataObject;
 		const req = this.getRequestObject();
 
-		const webhookData = this.getWorkflowStaticData('node') as IDataObject;
-
-
 		if (headerData['x-hook-secret'] !== undefined) {
-			// Is a create webhook confirmation request
-			webhookData.hookSecret = headerData['x-hook-secret'];
-
+			// Is a create webhook confirmation request; the secret itself is
+			// captured from the create-webhook API response, not from this header
 			const res = this.getResponseObject();
-			res.set('X-Hook-Secret', webhookData.hookSecret as string);
+			res.set('X-Hook-Secret', headerData['x-hook-secret'] as string);
 			res.status(200).end();
+
 			return {
 				noWebhookResponse: true,
 			};
 		}
 
+		if (!verifySignature.call(this)) {
+			const res = this.getResponseObject();
+			res.status(401).send('Unauthorized').end();
+			return { noWebhookResponse: true };
+		}
+
 		// Is regular webhook call
 		// Check if it contains any events
-		if (bodyData.events === undefined || !Array.isArray(bodyData.events) ||
-			bodyData.events.length === 0) {
+		if (
+			bodyData.events === undefined ||
+			!Array.isArray(bodyData.events) ||
+			bodyData.events.length === 0
+		) {
 			// Does not contain any event data so nothing to process so no reason to
 			// start the workflow
 			return {};
 		}
 
-		// Check if the request is valid
-		// (if the signature matches to data and hookSecret)
-		const computedSignature = createHmac("sha256", webhookData.hookSecret as string).update(JSON.stringify(req.body)).digest("hex");
-		if (headerData['x-hook-signature'] !== computedSignature) {
-			// Signature is not valid so ignore call
-			return {};
-		}
-
 		return {
-			workflowData: [
-				this.helpers.returnJsonArray(req.body)
-			],
+			workflowData: [this.helpers.returnJsonArray(req.body.events as IDataObject[])],
 		};
 	}
 }
